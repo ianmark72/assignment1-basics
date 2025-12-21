@@ -26,7 +26,7 @@ class NaiveTokenization:
         for w in word_frequencies:
             for i in range(len(w) - 1):
                 pairs[(w[i], w[i + 1])] += word_frequencies[w]
-        return max(pairs, key=lambda p: (pairs[p], p))
+        return max(pairs, key=lambda p: (pairs[p], (self.vocab[p[0]], self.vocab[p[1]]))), pairs 
 
     def merge_pair(
         self, tokens: list[int], pair: tuple[int, int], new_id: int
@@ -91,44 +91,59 @@ class NaiveTokenization:
         # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
         return sorted(set(chunk_boundaries))
 
-    def train(self, path_t0_text: str, vocab_size: int) -> None:
+    def pre_tokenize(self, chunk: str) -> list[bytes]:
+        pre_tokens = re.findall(self.PAT, chunk)
+        corpus = [w.encode("utf-8") for w in pre_tokens]
+        return corpus
+
+    def train(
+        self, path_to_text: str, vocab_size: int, special_tokens: list[str]
+    ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
         # first, pre tokenize
         # then count token frequency
         # iterate over all token byte pairs, and find most frequent
         # then, merge the tokens back into the vocab
-        with open(..., "rb") as f:
-            num_processes = 4
-            boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-
-    # The following is a serial implementation, but you can parallelize this
-    # by sending each start/end pair to a set of processes.
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
-        pre_tokens = re.findall(self.PAT, text)
-        corpus = [w.encode("utf-8") for w in pre_tokens]
-        word_frequencies = self.word_frequency(corpus)
-        while len(self.vocab) < vocab_size:
-            merge = self.get_max_byte_pair_frequency(word_frequencies)
-            self.merges.append(merge)
-            print(
-                f"to merge {self.vocab[merge[0]], self.vocab[merge[1]], merge[0], merge[1]} now mapping to {self.next_index}"
-            )
-            self.vocab[self.next_index] = self.vocab[merge[0]] + self.vocab[merge[1]]
-            print(self.vocab[self.next_index])
+        for s in special_tokens:
+            self.vocab[self.next_index] = s.encode("utf-8")
             self.next_index += 1
-            updated_word_frequency = {}
-            for w in word_frequencies:
-                new_word = self.merge_pair(w, merge, self.next_index - 1)
-                updated_word_frequency[tuple(new_word)] = word_frequencies[w]
-            word_frequencies = updated_word_frequency
+        corpus = []
+        with open(path_to_text, "rb") as f:
+            num_processes = 4
+            boundaries = self.find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+
+            # The following is a serial implementation, but you can parallelize this
+            # by sending each start/end pair to a set of processes.
+            for start, end in zip(boundaries[:-1], boundaries[1:]):
+                f.seek(start)
+                chunk = f.read(end - start).decode("utf-8", errors="ignore")
+                # Run pre-tokenization on your chunk and store the counts for each pre-token
+                corpus += self.pre_tokenize(chunk)
+            word_frequencies = self.word_frequency(corpus)
+            while len(self.vocab) < vocab_size:
+                merge, pairs = self.get_max_byte_pair_frequency(word_frequencies)
+                # if len(self.merges) == 89:
+                #     print(f"\nTop 5 pairs at merge {len(self.merges)}:")
+                #     top_5 = sorted(pairs.items(), key=lambda x: (x[1], x[0]), reverse=True)[:5]
+                #     for pair, count in top_5:
+                #         print(f"  {pair}: {count}")
+                #         print(f"{self.vocab[pair[0]], self.vocab[pair[1]]}")
+                #     breakpoint()
+                self.merges.append((self.vocab[merge[0]], self.vocab[merge[1]]))
+                self.vocab[self.next_index] = (
+                    self.vocab[merge[0]] + self.vocab[merge[1]]
+                )
+                self.next_index += 1
+                updated_word_frequency = {}
+                for w in word_frequencies:
+                    new_word = self.merge_pair(w, merge, self.next_index - 1)
+                    updated_word_frequency[tuple(new_word)] = word_frequencies[w]
+                word_frequencies = updated_word_frequency
         return self.vocab, self.merges
 
 
 if __name__ == "__main__":
     tz = NaiveTokenization()
     tz.train(
-        "low low low low low lower lower widest widest widest newest newest newest newest newest newest",
+        "/Users/ianmark/workspace/cs336/assignment1-basics/tests/fixtures/tinystories_sample.txt",
         255 + 6,
     )
