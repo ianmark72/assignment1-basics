@@ -27,7 +27,7 @@ def run_linear(
 
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
-    """⛯
+    """
 
     raise NotImplementedError
 
@@ -285,7 +285,7 @@ def run_transformer_lm(
     d_ff: int,
     rope_theta: float,
     weights: dict[str, Tensor],
-    in_indices: Int[Tensor, " batch_size sequence_length"],⛯
+    in_indices: Int[Tensor, " batch_size sequence_length"],
 ) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
     """Given the weights of a Transformer language model and input indices,
     return the output of running a forward pass on the input indices.
@@ -452,7 +452,9 @@ def run_cross_entropy(
     raise NotImplementedError
 
 
-def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+def run_gradient_clipping(
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float
+) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
     Args:
