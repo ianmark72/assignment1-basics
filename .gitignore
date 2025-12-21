@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+CLAUDE.md
+.claude/
+
 # Distribution / packaging
 .Python
 build/
@@ -160,4 +163,5 @@ cython_debug/
 #.idea/
 
 .ruff_cache/
-*.zip
+*.zip.claude/
+__pycache__/
