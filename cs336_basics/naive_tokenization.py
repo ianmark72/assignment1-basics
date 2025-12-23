@@ -8,10 +8,10 @@ from typing import BinaryIO
 class NaiveTokenization:
     PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\sp{L}p{N}]+|\s+(?!\S)|\s+"""
 
-    def __init__(self):
-        self.vocab = {i: bytes([i]) for i in range(256)}
-        self.next_index = 256
-        self.merges = []
+    def __init__(self) -> None:
+        self.vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
+        self.next_index: int = 256
+        self.merges: list[tuple[bytes, bytes]] = []
 
     def _id_to_bytes(self, token_id: int) -> bytes:
         return self.vocab[token_id]
@@ -28,19 +28,19 @@ class NaiveTokenization:
     def _debug_print_pair(self, pair: tuple[int, int], freq: int | None = None):
         b1, b2 = self._pair_ids_to_bytes(pair)
         freq_str = f" (freq: {freq})" if freq else ""
-        print(f"  Pair {pair} = ({b1}, {b2}){freq_str}")
+        print(f"  Pair {pair} = ({b1!r}, {b2!r}){freq_str}")
         return (b1, b2)
 
-    def word_frequency(self, corpus: list[bytes]) -> dict[tuple[bytes], int]:
-        word_frequencies = collections.defaultdict(int)
+    def word_frequency(self, corpus: list[bytes]) -> dict[tuple[bytes, ...], int]:
+        word_frequencies: dict[tuple[bytes, ...], int] = collections.defaultdict(int)
         for w in corpus:
-            word_frequencies[tuple(w)] += 1
+            word_frequencies[tuple(bytes([b]) for b in w)] += 1
         return word_frequencies
 
     def get_max_byte_pair_frequency(
-        self, word_frequencies: dict[tuple[bytes], int]
+        self, word_frequencies: dict[tuple[bytes, ...], int]
     ) -> tuple[bytes, bytes]:
-        pairs = collections.defaultdict(int)
+        pairs: dict[tuple[bytes, bytes], int] = collections.defaultdict(int)
         for w in word_frequencies:
             for i in range(len(w) - 1):
                 pairs[(w[i], w[i + 1])] += word_frequencies[w]
@@ -54,22 +54,22 @@ class NaiveTokenization:
         )
 
     def merge_pair(
-        self, tokens: list[int], pair: tuple[int, int], new_id: int
-    ) -> list[int]:
+        self, word_bytes: tuple[bytes, ...], pair: tuple[bytes, bytes], new_byte: bytes
+    ) -> tuple[bytes, ...]:
         result = []
         i = 0
-        while i < len(tokens):
+        while i < len(word_bytes):
             if (
-                i < len(tokens) - 1
-                and tokens[i] == pair[0]
-                and tokens[i + 1] == pair[1]
+                i < len(word_bytes) - 1
+                and word_bytes[i] == pair[0]
+                and word_bytes[i + 1] == pair[1]
             ):
-                result.append(new_id)
+                result.append(new_byte)
                 i += 2
             else:
-                result.append(tokens[i])
+                result.append(word_bytes[i])
                 i += 1
-        return result
+        return tuple(bytes(b) for b in result)
 
     def find_chunk_boundaries(
         self,
@@ -146,22 +146,23 @@ class NaiveTokenization:
         word_frequencies = self.word_frequency(corpus)
         while len(self.vocab) < vocab_size:
             merge = self.get_max_byte_pair_frequency(word_frequencies)
-            print(type(merge), type(merge[0]))
             self.merges.append(
                 # (self._id_to_bytes(merge[0]), self._id_to_bytes(merge[1]))
                 (merge[0], merge[1])
             )
-            self.vocab[self.next_index] = merge[0] + merge[1]  # self._id_to_bytes(
-            #     merge[0]
-            # ) + self._id_to_bytes(merge[1])
+            self.vocab[self.next_index] = merge[0] + merge[1]
+            # print(f"Added {self.vocab[self.next_index]!r} to vocab at {self.next_index}")
             self.next_index += 1
             updated_word_frequency = {}
             for w in word_frequencies:
-                if merge in w:
-                    new_word = self.merge_pair(w, merge, self.next_index - 1)
-                    updated_word_frequency[tuple(new_word)] = word_frequencies[w]
-                else:
-                    updated_word_frequency[w] = word_frequencies[w]
+                if len(self.merges) == 90:
+                    # breakpoint()
+                    pass
+                new_word = self.merge_pair(
+                    w, merge, self._id_to_bytes(self.next_index - 1)
+                )
+                # print(f"new word {new_word}")
+                updated_word_frequency[new_word] = word_frequencies[w]
             word_frequencies = updated_word_frequency
         return self.vocab, self.merges
 
