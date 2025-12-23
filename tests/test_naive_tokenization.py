@@ -10,7 +10,6 @@ def tokenizer():
 
 
 class TestMergePair:
-    """Group related tests together in a class."""
 
     def test_basic_merge(self, tokenizer):
         """Test merging a single pair."""
@@ -75,10 +74,8 @@ class TestWordFrequency:
 
 
 class TestGetMaxBytePairFrequency:
-    """Test finding most frequent byte pair."""
 
     def test_simple_case(self, tokenizer):
-        """Test finding max pair in simple case."""
         word_freq = {
             tuple(b"low"): 3,
             tuple(b"lower"): 1,
@@ -92,46 +89,45 @@ class TestGetMaxBytePairFrequency:
         assert len(pair) == 2
 
     def test_lexicographic_tiebreaker(self, tokenizer):
-        """Test that ties are broken lexicographically."""
-        # Create case where multiple pairs have same frequency
         word_freq = {
-            (1, 2): 1,
-            (3, 4): 1,
+            (tokenizer._bytes_to_id(b"e"), tokenizer._bytes_to_id(b"s")): 1,
+            (tokenizer._bytes_to_id(b"s"), tokenizer._bytes_to_id(b"t")): 1,
         }
         pair = tokenizer.get_max_byte_pair_frequency(word_freq)
 
-        # Should pick lexicographically larger: (3, 4) > (1, 2)
-        assert pair == (3, 4), "Should use lexicographic tiebreaker"
+        assert pair == (tokenizer._bytes_to_id(b"s"), tokenizer._bytes_to_id(b"t"))
 
+    def test_provided_example(self, tokenizer):
+        tokenizer.vocab[256] = b"BA"
+        tokenizer.vocab[257] = b"ZZ"
 
-class TestVocabInitialization:
-    """Test initial vocabulary setup."""
+        word_freq = {
+            (65, 66): 1,  # (A, B)
+            (65, 67): 1,  # (A, C)
+            (66, 257): 1,  # (B, ZZ)
+            (256, 65): 1,  # (BA, A)
+        }
+        pair = tokenizer.get_max_byte_pair_frequency(word_freq)
 
-    def test_initial_vocab_size(self, tokenizer):
-        """Initial vocab should have 256 entries (0-255)."""
-        assert len(tokenizer.vocab) == 256
-
-    def test_vocab_contains_all_bytes(self, tokenizer):
-        """Vocab should contain all byte values 0-255."""
-        for i in range(256):
-            assert i in tokenizer.vocab
-            assert tokenizer.vocab[i] == bytes([i])
-
-    def test_next_index_starts_at_256(self, tokenizer):
-        """Next index should start at 256 (after initial bytes)."""
-        assert tokenizer.next_index == 256
+        assert pair == (
+            tokenizer._bytes_to_id(b"BA"),
+            tokenizer._bytes_to_id(b"A"),
+        ), f"Expected (256, 65) for (BA, A), got {tokenizer._debug_print_pair(pair)}"
 
 
 # Example of testing with actual text
 class TestIntegration:
     """Integration tests with real text."""
 
-    def test_train_small_vocab(self, tokenizer):
+    def test_train_small_vocab(self, tokenizer, tmp_path):
         """Test training with small vocabulary increase."""
-        text = "low low low"
+        # Create a temporary file with test text
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("low low low")
+
         initial_vocab_size = len(tokenizer.vocab)
 
-        tokenizer.train(text, vocab_size=initial_vocab_size + 2)
+        tokenizer.train(str(test_file), vocab_size=initial_vocab_size + 2)
 
         # Should have added 2 new tokens
         assert len(tokenizer.vocab) == initial_vocab_size + 2

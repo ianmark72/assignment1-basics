@@ -1,0 +1,19 @@
+{
+  // Enable Pylance type checking
+  "python.analysis.typeCheckingMode": "strict",  // Maximum type safety
+
+  // Show type hints inline
+  "python.analysis.inlayHints.variableTypes": true,
+  "python.analysis.inlayHints.functionReturnTypes": true,
+
+  // Use the project's Python interpreter (uv-managed)
+  "python.defaultInterpreterPath": "/Users/ianmark/workspace/cs336/assignment1-basics/.venv/bin/python",
+
+  // Optional: Enable additional diagnostics
+  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.autoImportCompletions": true,
+
+  // Format on save (optional)
+  "editor.formatOnSave": true,
+  "python.formatting.provider": "black"
+}
