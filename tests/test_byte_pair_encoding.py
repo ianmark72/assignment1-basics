@@ -1,10 +1,10 @@
 import pytest
-from cs336_basics.naive_tokenization import NaiveTokenization
+from cs336_basics.BytePairEncoding import BytePairEncoding
 
 
 @pytest.fixture
 def tokenizer():
-    return NaiveTokenization()
+    return BytePairEncoding()
 
 
 def to_byte_tuple(s: bytes) -> tuple[bytes, ...]:
@@ -87,41 +87,21 @@ class TestWordFrequency:
 
 
 class TestGetMaxBytePairFrequency:
-    def test_simple_case(self, tokenizer):
-        word_freq = {
-            to_byte_tuple(b"low"): 3,
-            to_byte_tuple(b"lower"): 1,
-        }
-        pair = tokenizer.get_max_byte_pair_frequency(word_freq)
-
-        assert pair is not None
-        assert isinstance(pair, tuple)
-        assert len(pair) == 2
-        assert isinstance(pair[0], bytes)
-        assert isinstance(pair[1], bytes)
-
-    def test_lexicographic_tiebreaker(self, tokenizer):
-        word_freq = {
-            to_byte_tuple(b"es"): 1,
-            to_byte_tuple(b"st"): 1,
-        }
-        pair = tokenizer.get_max_byte_pair_frequency(word_freq)
-
-        assert pair == (b"s", b"t")
-
-    def test_provided_example(self, tokenizer):
-        tokenizer.vocab[256] = b"BA"
-        tokenizer.vocab[257] = b"ZZ"
-
-        word_freq = {
-            (b"A", b"B"): 1,
-            (b"A", b"C"): 1,
-            (b"B", b"ZZ"): 1,
-            (b"BA", b"A"): 1,
-        }
-        pair = tokenizer.get_max_byte_pair_frequency(word_freq)
-
-        assert pair == (b"BA", b"A")
+    @pytest.mark.parametrize(
+        "word_freq,expected",
+        [
+            ({to_byte_tuple(b"aa"): 3, to_byte_tuple(b"hi"): 1}, (b"a", b"a")),
+            ({to_byte_tuple(b"es"): 1, to_byte_tuple(b"st"): 1}, (b"s", b"t")),
+            ({to_byte_tuple(b"aaa"): 1}, (b"a", b"a")),
+            ({to_byte_tuple(b"ab"): 2, to_byte_tuple(b"cd"): 3}, (b"c", b"d")),
+            (
+                {(b"A", b"B"): 1, (b"A", b"C"): 1, (b"B", b"ZZ"): 1, (b"BA", b"A"): 1},
+                (b"BA", b"A"),
+            ),
+        ],
+    )
+    def test_get_max_byte_pair_frequency(self, tokenizer, word_freq, expected):
+        assert tokenizer.get_max_byte_pair_frequency(word_freq) == expected
 
 
 class TestVocabInitialization:
@@ -137,28 +117,22 @@ class TestVocabInitialization:
         assert tokenizer.next_index == 256
 
 
-class TestIntegration:
-    def test_train_small_vocab(self, tokenizer, tmp_path):
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("low low low")
+class TestPreTokenize:
+    def test_pre_tokenize_with_special_tokens(self, tokenizer):
+        chunk = "Hello world<|endoftext|>Goodbye world"
+        special_tokens = ["<|endoftext|>"]
 
-        initial_vocab_size = len(tokenizer.vocab)
+        result = tokenizer.pre_tokenize(chunk, special_tokens)
 
-        tokenizer.train(str(test_file), vocab_size=initial_vocab_size + 2)
+        assert result == [
+            "Hello".encode("utf-8"),
+            " world".encode("utf-8"),
+            "Goodbye".encode("utf-8"),
+            " world".encode("utf-8"),
+        ]
 
-        assert len(tokenizer.vocab) == initial_vocab_size + 2
-        assert tokenizer.next_index == initial_vocab_size + 2
-
-    @pytest.mark.parametrize(
-        "text,expected_min_tokens",
-        [
-            ("hello", 1),
-            ("hello world", 2),
-            ("", 0),
-        ],
-    )
-    def test_pretokenization(self, tokenizer, text, expected_min_tokens):
-        import regex as re
-
-        pre_tokens = re.findall(tokenizer.PAT, text)
-        assert len(pre_tokens) >= expected_min_tokens
+        # What assertions should you make?
+        # Think about:
+        # - Should any token contain "<|endoftext|>"?
+        # - Should you see tokens from both "Hello world" and "Goodbye world"?
+        # - How can you verify no token spans the boundary?

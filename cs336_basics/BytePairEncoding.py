@@ -1,17 +1,24 @@
 import itertools
-import regex as re
+import regex
 import collections
 import os
-from typing import BinaryIO
+from typing import BinaryIO, Any
+import shutil
 
 
-class NaiveTokenization:
-    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\sp{L}p{N}]+|\s+(?!\S)|\s+"""
+class BytePairEncoding:
+    PAT = regex.compile(
+        (r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+    )
 
     def __init__(self) -> None:
         self.vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
         self.next_index: int = 256
         self.merges: list[tuple[bytes, bytes]] = []
+
+    def _print_separator(self) -> None:
+        width = shutil.get_terminal_size().columns
+        print(f"{'='*width}\n")
 
     def _id_to_bytes(self, token_id: int) -> bytes:
         return self.vocab[token_id]
@@ -22,20 +29,20 @@ class NaiveTokenization:
                 return token_id
         return None
 
-    def _pair_ids_to_bytes(self, pair: tuple[int, int]) -> tuple[bytes, bytes]:
-        return (self._id_to_bytes(pair[0]), self._id_to_bytes(pair[1]))
-
-    def _debug_print_pair(self, pair: tuple[int, int], freq: int | None = None):
-        b1, b2 = self._pair_ids_to_bytes(pair)
-        freq_str = f" (freq: {freq})" if freq else ""
-        print(f"  Pair {pair} = ({b1!r}, {b2!r}){freq_str}")
-        return (b1, b2)
-
     def word_frequency(self, corpus: list[bytes]) -> dict[tuple[bytes, ...], int]:
         word_frequencies: dict[tuple[bytes, ...], int] = collections.defaultdict(int)
         for w in corpus:
             word_frequencies[tuple(bytes([b]) for b in w)] += 1
         return word_frequencies
+
+    def _print_top_words(
+        self, word_frequencies: dict[tuple[bytes, ...], int], n: int = 10
+    ):
+        for word_tuple, freq in sorted(
+            word_frequencies.items(), key=lambda x: x[1], reverse=True
+        )[:n]:
+            word = b"".join(word_tuple)
+            print(f"{word!r}: {freq}")
 
     def get_max_byte_pair_frequency(
         self, word_frequencies: dict[tuple[bytes, ...], int]
@@ -48,8 +55,7 @@ class NaiveTokenization:
             pairs,
             key=lambda p: (
                 pairs[p],
-                # (self._id_to_bytes(p[0]), self._id_to_bytes(p[1])),
-                p,
+                (p[0], p[1]),
             ),
         )
 
@@ -69,7 +75,7 @@ class NaiveTokenization:
             else:
                 result.append(word_bytes[i])
                 i += 1
-        return tuple(bytes(b) for b in result)
+        return tuple(result)
 
     def find_chunk_boundaries(
         self,
@@ -116,18 +122,30 @@ class NaiveTokenization:
         # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
         return sorted(set(chunk_boundaries))
 
-    def pre_tokenize(self, chunk: str) -> list[bytes]:
-        pre_tokens = re.findall(self.PAT, chunk)
-        corpus = [w.encode("utf-8") for w in pre_tokens]
+    def pre_tokenize(self, chunk: str, special_tokens: list[str]) -> list[bytes]:
+        if special_tokens:
+            pattern = "|".join(regex.escape(token) for token in special_tokens)
+            segments = regex.split(pattern, chunk)
+        else:
+            segments = [chunk]
+
+        corpus = []
+        for segment in segments:
+            if not segment:
+                continue
+            for pre_token in regex.finditer(self.PAT, segment):
+                corpus.append(pre_token.group().encode("utf-8"))
         return corpus
 
     def train(
-        self, path_to_text: str, vocab_size: int, special_tokens: list[str] = []
+        self,
+        path_to_text: str | os.PathLike[Any],
+        vocab_size: int,
+        special_tokens: list[str] = [],
     ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-        # first, pre tokenize
-        # then count token frequency
-        # iterate over all token byte pairs, and find most frequent
-        # then, merge the tokens back into the vocab
+        debug_chunking: bool = False
+        if debug_chunking:
+            width = shutil.get_terminal_size().columns
         for s in special_tokens:
             self.vocab[self.next_index] = s.encode("utf-8")
             self.next_index += 1
@@ -136,40 +154,33 @@ class NaiveTokenization:
             num_processes = 4
             boundaries = self.find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
-            # The following is a serial implementation, but you can parallelize this
-            # by sending each start/end pair to a set of processes.
             for start, end in zip(boundaries[:-1], boundaries[1:]):
                 f.seek(start)
                 chunk = f.read(end - start).decode("utf-8", errors="ignore")
-                # Run pre-tokenization on your chunk and store the counts for each pre-token
-                corpus += self.pre_tokenize(chunk)
+                corpus += self.pre_tokenize(chunk, special_tokens)
         word_frequencies = self.word_frequency(corpus)
         while len(self.vocab) < vocab_size:
             merge = self.get_max_byte_pair_frequency(word_frequencies)
-            self.merges.append(
-                # (self._id_to_bytes(merge[0]), self._id_to_bytes(merge[1]))
-                (merge[0], merge[1])
-            )
+            self.merges.append((merge[0], merge[1]))
             self.vocab[self.next_index] = merge[0] + merge[1]
-            # print(f"Added {self.vocab[self.next_index]!r} to vocab at {self.next_index}")
             self.next_index += 1
-            updated_word_frequency = {}
+            updated_word_frequency: dict[tuple[bytes, ...], int] = {}
             for w in word_frequencies:
-                if len(self.merges) == 90:
-                    # breakpoint()
-                    pass
                 new_word = self.merge_pair(
                     w, merge, self._id_to_bytes(self.next_index - 1)
                 )
-                # print(f"new word {new_word}")
-                updated_word_frequency[new_word] = word_frequencies[w]
+                if new_word in updated_word_frequency:
+                    updated_word_frequency[new_word] += word_frequencies[w]
+                else:
+                    updated_word_frequency[new_word] = word_frequencies[w]
             word_frequencies = updated_word_frequency
         return self.vocab, self.merges
 
 
 if __name__ == "__main__":
-    tz = NaiveTokenization()
+    tz = BytePairEncoding()
     tz.train(
         "/Users/ianmark/workspace/cs336/assignment1-basics/tests/fixtures/tinystories_sample.txt",
         255 + 6,
+        special_tokens=["<|endoftext|>"],
     )

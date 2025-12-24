@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
-from cs336_basics.naive_tokenization import NaiveTokenization
+from cs336_basics.BytePairEncoding import BytePairEncoding
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
@@ -591,5 +591,5 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    tk = NaiveTokenization()
+    tk = BytePairEncoding()
     return tk.train(input_path, vocab_size, special_tokens)
