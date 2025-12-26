@@ -143,7 +143,7 @@ class BytePairEncoding:
         for s in special_tokens:
             self.vocab[self.next_index] = s.encode("utf-8")
             self.next_index += 1
-        docs_per_chunk = 100
+        docs_per_chunk = 200
         with open(path_to_text, "rb") as f:
             boundaries = self.find_document_chunk_boundaries(
                 f, docs_per_chunk, b"<|endoftext|>"
@@ -160,7 +160,9 @@ class BytePairEncoding:
                 total=len(worker_args),
                 desc="Pre-tokenizing & counting",
             )
-            word_frequencies = self.word_frequency(itertools.chain.from_iterable(results))
+            word_frequencies = self.word_frequency(
+                itertools.chain.from_iterable(results)
+            )
         self.pair_frequencies: dict[tuple[bytes, bytes], int] = collections.defaultdict(
             int
         )
@@ -209,7 +211,9 @@ class BytePairEncoding:
                     del word_frequencies[w]
 
                 for new_word, freq in new_words.items():
-                    word_frequencies[new_word] = word_frequencies.get(new_word, 0) + freq
+                    word_frequencies[new_word] = (
+                        word_frequencies.get(new_word, 0) + freq
+                    )
                 pbar.update(1)
         return self.vocab, self.merges
 
