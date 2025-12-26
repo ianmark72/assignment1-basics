@@ -2,14 +2,39 @@ import itertools
 import regex
 import collections
 import os
-from typing import BinaryIO, Any
+from typing import BinaryIO, Any, Iterable
 import shutil
+import multiprocessing
+from tqdm import tqdm
+
+
+def _tokenize_chunk_worker(args):
+    file_path, start, end, special_tokens, pattern, byte_to_token = args
+    with open(file_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+
+    if special_tokens:
+        split_pattern = "|".join(regex.escape(token) for token in special_tokens)
+        segments = regex.split(split_pattern, chunk)
+    else:
+        segments = [chunk]
+
+    corpus = []
+    for segment in segments:
+        if not segment:
+            continue
+        for pre_token in regex.finditer(pattern, segment):
+            token_bytes = pre_token.group().encode("utf-8")
+            corpus.append(tuple(byte_to_token[b] for b in token_bytes))
+    return corpus
 
 
 class BytePairEncoding:
     PAT = regex.compile(
         (r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
     )
+    BYTE_TO_TOKEN = tuple(bytes([i]) for i in range(256))
 
     def __init__(self) -> None:
         self.vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
@@ -29,11 +54,10 @@ class BytePairEncoding:
                 return token_id
         return None
 
-    def word_frequency(self, corpus: list[bytes]) -> dict[tuple[bytes, ...], int]:
-        word_frequencies: dict[tuple[bytes, ...], int] = collections.defaultdict(int)
-        for w in corpus:
-            word_frequencies[tuple(bytes([b]) for b in w)] += 1
-        return word_frequencies
+    def word_frequency(
+        self, corpus: Iterable[tuple[bytes, ...]]
+    ) -> dict[tuple[bytes, ...], int]:
+        return collections.Counter(corpus)
 
     def _print_top_words(
         self, word_frequencies: dict[tuple[bytes, ...], int], n: int = 10
@@ -47,14 +71,10 @@ class BytePairEncoding:
     def get_max_byte_pair_frequency(
         self, word_frequencies: dict[tuple[bytes, ...], int]
     ) -> tuple[bytes, bytes]:
-        pairs: dict[tuple[bytes, bytes], int] = collections.defaultdict(int)
-        for w in word_frequencies:
-            for i in range(len(w) - 1):
-                pairs[(w[i], w[i + 1])] += word_frequencies[w]
         return max(
-            pairs,
+            self.pair_frequencies,
             key=lambda p: (
-                pairs[p],
+                self.pair_frequencies[p],
                 (p[0], p[1]),
             ),
         )
@@ -77,65 +97,42 @@ class BytePairEncoding:
                 i += 1
         return tuple(result)
 
-    def find_chunk_boundaries(
+    def find_document_chunk_boundaries(
         self,
         file: BinaryIO,
-        desired_num_chunks: int,
-        split_special_token: bytes,
+        docs_per_chunk: int,
+        special_token: bytes,
     ) -> list[int]:
-        assert isinstance(
-            split_special_token, bytes
-        ), "Must represent special token as a bytestring"
-
-        # Get total file size in bytes
-        file.seek(0, os.SEEK_END)
-        file_size = file.tell()
+        positions = [0]
         file.seek(0)
+        position = 0
+        read_chunk_size = 1024 * 1024
 
-        chunk_size = file_size // desired_num_chunks
+        while True:
+            chunk = file.read(read_chunk_size)
+            if not chunk:
+                break
 
-        # Initial guesses for chunk boundary locations, uniformly spaced
-        # Chunks start on previous index, don't include last index
-        chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
-        chunk_boundaries[-1] = file_size
-
-        mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
-
-        for bi in range(1, len(chunk_boundaries) - 1):
-            initial_position = chunk_boundaries[bi]
-            file.seek(initial_position)  # Start at boundary guess
+            offset = 0
             while True:
-                mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
-
-                # If EOF, this boundary should be at the end of the file
-                if mini_chunk == b"":
-                    chunk_boundaries[bi] = file_size
+                idx = chunk.find(special_token, offset)
+                if idx == -1:
                     break
+                positions.append(position + idx)
+                offset = idx + len(special_token)
 
-                # Find the special token in the mini chunk
-                found_at = mini_chunk.find(split_special_token)
-                if found_at != -1:
-                    chunk_boundaries[bi] = initial_position + found_at
-                    break
-                initial_position += mini_chunk_size
+            position += len(chunk)
 
-        # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
-        return sorted(set(chunk_boundaries))
+        file.seek(0, os.SEEK_END)
+        positions.append(file.tell())
 
-    def pre_tokenize(self, chunk: str, special_tokens: list[str]) -> list[bytes]:
-        if special_tokens:
-            pattern = "|".join(regex.escape(token) for token in special_tokens)
-            segments = regex.split(pattern, chunk)
-        else:
-            segments = [chunk]
+        boundaries = []
+        for i in range(0, len(positions), docs_per_chunk):
+            boundaries.append(positions[i])
+        if boundaries[-1] != positions[-1]:
+            boundaries.append(positions[-1])
 
-        corpus = []
-        for segment in segments:
-            if not segment:
-                continue
-            for pre_token in regex.finditer(self.PAT, segment):
-                corpus.append(pre_token.group().encode("utf-8"))
-        return corpus
+        return boundaries
 
     def train(
         self,
@@ -143,44 +140,86 @@ class BytePairEncoding:
         vocab_size: int,
         special_tokens: list[str] = [],
     ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-        debug_chunking: bool = False
-        if debug_chunking:
-            width = shutil.get_terminal_size().columns
         for s in special_tokens:
             self.vocab[self.next_index] = s.encode("utf-8")
             self.next_index += 1
-        corpus = []
+        docs_per_chunk = 100
         with open(path_to_text, "rb") as f:
-            num_processes = 4
-            boundaries = self.find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+            boundaries = self.find_document_chunk_boundaries(
+                f, docs_per_chunk, b"<|endoftext|>"
+            )
 
-            for start, end in zip(boundaries[:-1], boundaries[1:]):
-                f.seek(start)
-                chunk = f.read(end - start).decode("utf-8", errors="ignore")
-                corpus += self.pre_tokenize(chunk, special_tokens)
-        word_frequencies = self.word_frequency(corpus)
-        while len(self.vocab) < vocab_size:
-            merge = self.get_max_byte_pair_frequency(word_frequencies)
-            self.merges.append((merge[0], merge[1]))
-            self.vocab[self.next_index] = merge[0] + merge[1]
-            self.next_index += 1
-            updated_word_frequency: dict[tuple[bytes, ...], int] = {}
-            for w in word_frequencies:
-                new_word = self.merge_pair(
-                    w, merge, self._id_to_bytes(self.next_index - 1)
-                )
-                if new_word in updated_word_frequency:
-                    updated_word_frequency[new_word] += word_frequencies[w]
-                else:
-                    updated_word_frequency[new_word] = word_frequencies[w]
-            word_frequencies = updated_word_frequency
+        worker_args = [
+            (path_to_text, start, end, special_tokens, self.PAT, self.BYTE_TO_TOKEN)
+            for start, end in zip(boundaries[:-1], boundaries[1:])
+        ]
+
+        with multiprocessing.Pool(4) as pool:
+            results = tqdm(
+                pool.imap(_tokenize_chunk_worker, worker_args),
+                total=len(worker_args),
+                desc="Pre-tokenizing & counting",
+            )
+            word_frequencies = self.word_frequency(itertools.chain.from_iterable(results))
+        self.pair_frequencies: dict[tuple[bytes, bytes], int] = collections.defaultdict(
+            int
+        )
+        pair_to_words: dict[tuple[bytes, bytes], set[tuple[bytes, ...]]] = (
+            collections.defaultdict(set)
+        )
+
+        for word, freq in tqdm(
+            word_frequencies.items(), desc="Building pair frequencies"
+        ):
+            for i in range(len(word) - 1):
+                pair = (word[i], word[i + 1])
+                self.pair_frequencies[pair] += freq
+                pair_to_words[pair].add(word)
+        with tqdm(total=vocab_size - len(self.vocab), desc="Training BPE") as pbar:
+            while len(self.vocab) < vocab_size:
+                merge = self.get_max_byte_pair_frequency(word_frequencies)
+                self.merges.append((merge[0], merge[1]))
+                self.vocab[self.next_index] = merge[0] + merge[1]
+                self.next_index += 1
+
+                words_with_merge = set(pair_to_words.get(merge, set()))
+                new_words: dict[tuple[bytes, ...], int] = {}
+
+                for w in words_with_merge:
+                    freq = word_frequencies[w]
+
+                    for i in range(len(w) - 1):
+                        old_pair = (w[i], w[i + 1])
+                        self.pair_frequencies[old_pair] -= freq
+                        if self.pair_frequencies[old_pair] == 0:
+                            del self.pair_frequencies[old_pair]
+                        pair_to_words[old_pair].discard(w)
+
+                    new_word = self.merge_pair(
+                        w, merge, self._id_to_bytes(self.next_index - 1)
+                    )
+                    new_words[new_word] = new_words.get(new_word, 0) + freq
+
+                    for i in range(len(new_word) - 1):
+                        new_pair = (new_word[i], new_word[i + 1])
+                        self.pair_frequencies[new_pair] += freq
+                        pair_to_words[new_pair].add(new_word)
+
+                for w in words_with_merge:
+                    del word_frequencies[w]
+
+                for new_word, freq in new_words.items():
+                    word_frequencies[new_word] = word_frequencies.get(new_word, 0) + freq
+                pbar.update(1)
         return self.vocab, self.merges
 
 
 if __name__ == "__main__":
     tz = BytePairEncoding()
     tz.train(
-        "/Users/ianmark/workspace/cs336/assignment1-basics/tests/fixtures/tinystories_sample.txt",
-        255 + 6,
+        # "/Users/ianmark/workspace/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-valid.txt",
+        # "/Users/ianmark/workspace/cs336/assignment1-basics/tests/fixtures/tinystories_sample_5m.txt",
+        "/Users/ianmark/workspace/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-train.txt",
+        10000,
         special_tokens=["<|endoftext|>"],
     )
